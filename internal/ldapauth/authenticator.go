@@ -100,50 +100,6 @@ func New(cfg config.Config) *Authenticator {
 	return authenticator
 }
 
-func (a *Authenticator) CheckConnection(parent context.Context) error {
-	ctx, cancel, deadline, err := a.operationContext(parent)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-
-	filter, err := buildUserFilter(a.config.UserFilter, "__silo_connection_test__")
-	if err != nil {
-		return staged(StageFilter, err)
-	}
-
-	conn, err := a.connect(ctx, deadline)
-	if err != nil {
-		return staged(StageConnection, err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	if a.config.BindDN != "" {
-		if err := conn.Bind(a.config.BindDN, a.config.BindPassword); err != nil {
-			return staged(StageSearchAccountBind, err)
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	request := ldap.NewSearchRequest(
-		a.config.BaseDN,
-		ldap.ScopeWholeSubtree,
-		ldap.NeverDerefAliases,
-		1,
-		0,
-		false,
-		filter,
-		[]string{"1.1"},
-		nil,
-	)
-	if _, err := conn.Search(request); err != nil {
-		return staged(StageUserSearch, err)
-	}
-	return nil
-}
-
 func (a *Authenticator) Authenticate(parent context.Context, username, password string) (*User, error) {
 	username = strings.TrimSpace(username)
 	if username == "" || password == "" {

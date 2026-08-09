@@ -7,8 +7,8 @@
   "presentation": {
     "display_name": "LDAP Authentication",
     "summary": "Authenticate Silo users through LDAP, Synology LDAP Server, or Active Directory.",
-    "description_markdown": "Adds password-based LDAP authentication to Silo. Supports LDAPS, StartTLS, stable external identities, direct group allowlisting, connection testing, Active Directory group-to-role synchronization, and automatic Silo account provisioning.",
-    "setup_markdown": "Install the plugin, open its configuration, enter your LDAP connection and user-search settings, and use Test connection before saving. For Active Directory role synchronization, use the user group as the sign-in allowlist and configure the administrator group in Role synchronization. Keep an existing local Silo administrator account for recovery.",
+    "description_markdown": "Adds password-based LDAP authentication to Silo. Supports LDAPS, StartTLS, stable external identities, direct group allowlisting, Active Directory group-to-role synchronization, and automatic Silo account provisioning.",
+    "setup_markdown": "Install the plugin, open its configuration, and enter your LDAP connection and user-search settings. For Active Directory role synchronization, use the user group as the sign-in allowlist, configure the administrator group in Role synchronization, and explicitly enable Allow managed Silo roles on the Silo authentication binding. Keep an existing local Silo administrator account for recovery.",
     "homepage_url": "https://github.com/zippyy/SiloMediaServer-LDAP",
     "source_url": "https://github.com/zippyy/SiloMediaServer-LDAP",
     "support_url": "https://github.com/zippyy/SiloMediaServer-LDAP/issues",
@@ -29,17 +29,9 @@
       "description": "Sign in with an LDAP directory account.",
       "auth_modes": ["password"],
       "metadata": {
-        "connection_test": true,
-        "connection_test_config_keys": ["ldap"],
         "managed_role_contract": "silo.auth.managed-role.v1",
         "role_values": ["user", "admin"]
       }
-    },
-    {
-      "type": "request_router.v1",
-      "id": "ldap",
-      "display_name": "LDAP connection test",
-      "description": "Tests the LDAP transport, search-account bind, and user-search configuration."
     }
   ],
   "global_config_schema": [
@@ -63,10 +55,10 @@
           {"key":"display_name_attribute","label":"Display name attribute","control":"ADMIN_FORM_CONTROL_TEXT","default_value":"displayName"},
           {"key":"email_attribute","label":"Email attribute","control":"ADMIN_FORM_CONTROL_TEXT","default_value":"mail"},
           {"key":"group_attribute","label":"Group membership attribute","description":"Usually memberOf. Direct membership is evaluated.","control":"ADMIN_FORM_CONTROL_TEXT","default_value":"memberOf"},
-          {"key":"required_groups","label":"Sign-in group DNs","description":"Optional sign-in allowlist. Enter one group DN per line. For your AD, use CN=JellyfinUsers,OU=groups,DC=nbennett,DC=xyz. Administrator accounts must also satisfy this allowlist.","control":"ADMIN_FORM_CONTROL_TEXTAREA","multiline":true,"rows":4,"placeholder":"CN=JellyfinUsers,OU=groups,DC=example,DC=com"},
+          {"key":"required_groups","label":"Sign-in group DNs","description":"Optional sign-in allowlist. Enter one group DN per line, such as CN=SiloUsers,OU=Groups,DC=example,DC=com. Administrator accounts must also satisfy this allowlist.","control":"ADMIN_FORM_CONTROL_TEXTAREA","multiline":true,"rows":4,"placeholder":"CN=SiloUsers,OU=Groups,DC=example,DC=com"},
           {"key":"group_match_mode","label":"Sign-in group match","control":"ADMIN_FORM_CONTROL_SELECT","default_value":"any","options":[{"value":"any","label":"Any configured group"},{"value":"all","label":"All configured groups"}]},
-          {"key":"role_sync_enabled","label":"Synchronize Silo roles from LDAP","description":"When enabled, administrator-group members are Silo admins and all other allowed LDAP users are Silo users. Role changes are applied at login.","control":"ADMIN_FORM_CONTROL_SWITCH","default_value":false},
-          {"key":"admin_groups","label":"Administrator group DNs","description":"Enter one administrator group DN per line. For your AD, use CN=JellyfinAdmins,OU=groups,DC=nbennett,DC=xyz.","control":"ADMIN_FORM_CONTROL_TEXTAREA","multiline":true,"rows":3,"placeholder":"CN=JellyfinAdmins,OU=groups,DC=example,DC=com"},
+          {"key":"role_sync_enabled","label":"Synchronize Silo roles from LDAP","description":"When enabled, administrator-group members are Silo admins and all other allowed LDAP users are Silo users. Role changes are applied at login and require Allow managed Silo roles on the host auth binding.","control":"ADMIN_FORM_CONTROL_SWITCH","default_value":false},
+          {"key":"admin_groups","label":"Administrator group DNs","description":"Enter one administrator group DN per line, such as CN=SiloAdmins,OU=Groups,DC=example,DC=com.","control":"ADMIN_FORM_CONTROL_TEXTAREA","multiline":true,"rows":3,"placeholder":"CN=SiloAdmins,OU=Groups,DC=example,DC=com"},
           {"key":"admin_group_match_mode","label":"Administrator group match","control":"ADMIN_FORM_CONTROL_SELECT","default_value":"any","options":[{"value":"any","label":"Any configured administrator group"},{"value":"all","label":"All configured administrator groups"}]},
           {"key":"server_name","label":"TLS server name override","description":"Leave blank to use the hostname from the LDAP URL.","control":"ADMIN_FORM_CONTROL_TEXT","placeholder":"ldap.example.com"},
           {"key":"ca_pem","label":"Custom CA certificate","description":"Optional PEM certificate for a private LDAP certificate authority.","control":"ADMIN_FORM_CONTROL_TEXTAREA","multiline":true,"rows":6,"placeholder":"-----BEGIN CERTIFICATE-----"},

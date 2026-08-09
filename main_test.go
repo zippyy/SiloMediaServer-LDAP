@@ -15,43 +15,18 @@ import (
 )
 
 func TestManifestIsValid(t *testing.T) {
-	if _, err := publicmanifest.Load(manifestJSON); err != nil {
+	manifest, err := publicmanifest.Load(manifestJSON)
+	if err != nil {
 		t.Fatalf("manifest is invalid: %v", err)
 	}
-}
-
-func TestConnectionServerRequiresExplicitPositiveAcknowledgement(t *testing.T) {
-	auth := &authServer{}
-	auth.SetAuthenticator(&stubDirectoryAuthenticator{})
-	server := &connectionServer{auth: auth}
-
-	response, err := server.TestConnection(context.Background(), &pluginv1.TestConnectionRequest{CapabilityId: "ldap"})
-	if err != nil {
-		t.Fatalf("TestConnection() error = %v", err)
-	}
-	if !response.GetOk() {
-		t.Fatal("TestConnection() did not return an explicit positive acknowledgement")
-	}
-
-	_, err = server.TestConnection(context.Background(), &pluginv1.TestConnectionRequest{CapabilityId: "other"})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("wrong capability error = %v, want InvalidArgument", err)
-	}
-}
-
-func TestConnectionServerDoesNotExposeDirectoryError(t *testing.T) {
-	auth := &authServer{}
-	auth.SetAuthenticator(&stubDirectoryAuthenticator{
-		checkErr: &ldapauth.StageError{Stage: ldapauth.StageTLS, Err: errors.New("certificate for dc01.secret.example is invalid")},
-	})
-	server := &connectionServer{auth: auth}
-
-	_, err := server.TestConnection(context.Background(), &pluginv1.TestConnectionRequest{CapabilityId: "ldap"})
-	if status.Code(err) != codes.Unavailable {
-		t.Fatalf("TestConnection() error = %v, want Unavailable", err)
-	}
-	if strings.Contains(status.Convert(err).Message(), "dc01.secret.example") {
-		t.Fatalf("caller-facing error disclosed directory details: %v", err)
+	for _, capability := range manifest.GetCapabilities() {
+		if capability.GetType() == "request_router.v1" {
+			t.Fatalf("LDAP advertises unsupported media request capability %q", capability.GetId())
+		}
+		metadata := capability.GetMetadata().AsMap()
+		if _, ok := metadata["connection_test"]; ok {
+			t.Fatal("LDAP advertises an SDK-unsupported auth connection test")
+		}
 	}
 }
 
@@ -105,9 +80,8 @@ func TestAuthenticateDoesNotExposeDirectoryError(t *testing.T) {
 }
 
 type stubDirectoryAuthenticator struct {
-	user     *ldapauth.User
-	authErr  error
-	checkErr error
+	user    *ldapauth.User
+	authErr error
 }
 
 func (s *stubDirectoryAuthenticator) Authenticate(context.Context, string, string) (*ldapauth.User, error) {
@@ -118,8 +92,4 @@ func (s *stubDirectoryAuthenticator) Authenticate(context.Context, string, strin
 		return s.user, nil
 	}
 	return &ldapauth.User{Subject: "entryuuid:1"}, nil
-}
-
-func (s *stubDirectoryAuthenticator) CheckConnection(context.Context) error {
-	return s.checkErr
 }

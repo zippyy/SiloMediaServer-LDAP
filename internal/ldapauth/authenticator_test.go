@@ -98,21 +98,6 @@ func TestAuthenticateOperationSequences(t *testing.T) {
 	}
 }
 
-func TestCheckConnectionDoesNotReadConfiguredGroupObjects(t *testing.T) {
-	operations := []string{}
-	connection := &fakeLDAPConnection{operations: &operations, result: &ldap.SearchResult{}}
-	authenticator := testAuthenticator(connection, &operations)
-	authenticator.config.AdminGroups = []string{"cn=admins,dc=example,dc=com"}
-
-	if err := authenticator.CheckConnection(context.Background()); err != nil {
-		t.Fatalf("CheckConnection() error = %v", err)
-	}
-	want := []string{"connect", "bind:cn=reader,dc=example,dc=com", "search", "close"}
-	if !slices.Equal(operations, want) {
-		t.Fatalf("operations = %#v, want %#v", operations, want)
-	}
-}
-
 func TestAuthenticateExpiredContextDoesNotConnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -276,17 +261,17 @@ func TestGroupsAllowedAnyAllAndDuplicates(t *testing.T) {
 func TestRoleForGroups(t *testing.T) {
 	cfg := config.Default()
 	cfg.RoleSyncEnabled = true
-	cfg.AdminGroups = []string{"CN=JellyfinAdmins,OU=groups,DC=example,DC=com"}
+	cfg.AdminGroups = []string{"CN=SiloAdmins,OU=Groups,DC=example,DC=com"}
 
-	if role := roleForGroups([]string{"cn=jellyfinadmins,ou=groups,dc=example,dc=com"}, cfg); role != "admin" {
+	if role := roleForGroups([]string{"cn=siloadmins,ou=groups,dc=example,dc=com"}, cfg); role != "admin" {
 		t.Fatalf("administrator role = %q, want admin", role)
 	}
-	if role := roleForGroups([]string{"cn=jellyfinusers,ou=groups,dc=example,dc=com"}, cfg); role != "user" {
+	if role := roleForGroups([]string{"cn=silousers,ou=groups,dc=example,dc=com"}, cfg); role != "user" {
 		t.Fatalf("normal role = %q, want user", role)
 	}
 
 	cfg.RoleSyncEnabled = false
-	if role := roleForGroups([]string{"cn=jellyfinadmins,ou=groups,dc=example,dc=com"}, cfg); role != "" {
+	if role := roleForGroups([]string{"cn=siloadmins,ou=groups,dc=example,dc=com"}, cfg); role != "" {
 		t.Fatalf("disabled role sync returned %q, want empty", role)
 	}
 }

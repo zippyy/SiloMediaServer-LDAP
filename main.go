@@ -35,7 +35,6 @@ type runtimeServer struct {
 
 type directoryAuthenticator interface {
 	Authenticate(context.Context, string, string) (*ldapauth.User, error)
-	CheckConnection(context.Context) error
 }
 
 func (s *runtimeServer) GetManifest(context.Context, *pluginv1.GetManifestRequest) (*pluginv1.GetManifestResponse, error) {
@@ -111,27 +110,6 @@ func (s *authServer) Authenticate(ctx context.Context, req *pluginv1.Authenticat
 	}, nil
 }
 
-type connectionServer struct {
-	pluginv1.UnimplementedRequestRouterServer
-	auth *authServer
-}
-
-func (s *connectionServer) TestConnection(ctx context.Context, req *pluginv1.TestConnectionRequest) (*pluginv1.TestConnectionResponse, error) {
-	if req.GetCapabilityId() != config.EntryKey {
-		return nil, status.Error(codes.InvalidArgument, "unsupported connection-test capability")
-	}
-	authenticator := s.auth.Authenticator()
-	if authenticator == nil {
-		return nil, status.Error(codes.FailedPrecondition, "LDAP authentication is not configured")
-	}
-	if err := authenticator.CheckConnection(ctx); err != nil {
-		stage := ldapauth.FailureStage(err)
-		slog.ErrorContext(ctx, "LDAP connection check failed", "stage", stage, "error", err)
-		return nil, status.Errorf(codes.Unavailable, "LDAP connection check failed during %s", stage)
-	}
-	return &pluginv1.TestConnectionResponse{Ok: true}, nil
-}
-
 func main() {
 	manifest, err := publicmanifest.LoadWithChecksum(manifestJSON, version)
 	if err != nil {
@@ -139,7 +117,6 @@ func main() {
 	}
 
 	auth := &authServer{}
-	connections := &connectionServer{auth: auth}
 	runtime := &runtimeServer{
 		manifest: manifest,
 		auth:     auth,
@@ -147,9 +124,8 @@ func main() {
 
 	sdkruntime.Serve(sdkruntime.ServeConfig{
 		Servers: sdkruntime.CapabilityServers{
-			Runtime:       runtime,
-			AuthProvider:  auth,
-			RequestRouter: connections,
+			Runtime:      runtime,
+			AuthProvider: auth,
 		},
 	})
 }
