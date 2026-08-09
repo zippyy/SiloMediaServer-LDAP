@@ -56,7 +56,7 @@ The plugin never stores user passwords and does not log credentials.
 
 `{username}` is escaped with LDAP filter escaping before the search is performed.
 
-The external subject includes the lowercased subject-attribute name and its value. Binary `objectGUID` and `objectSid` values are hex encoded. Changing the configured subject attribute changes the Silo identity namespace and can provision a different Silo account, so treat that setting as immutable after users first sign in.
+The external subject includes the lowercased subject-attribute name and one exact, non-empty attribute value. Textual values preserve whitespace and case. Binary `objectGUID` and `objectSid` values use explicit canonical hex encoding; other non-UTF-8 subject attributes are rejected rather than assigned a potentially ambiguous representation. Multivalued subject attributes are rejected because value ordering is not a stable identity. Changing the configured subject attribute changes the Silo identity namespace and can provision a different Silo account, so treat that setting as immutable after users first sign in.
 
 ## Active Directory group and role mapping
 

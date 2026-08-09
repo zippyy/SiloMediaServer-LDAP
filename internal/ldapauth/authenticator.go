@@ -377,22 +377,19 @@ func buildUserFilter(template, username string) (string, error) {
 
 func stableSubject(entry *ldap.Entry, attribute string) (string, error) {
 	attribute = strings.TrimSpace(attribute)
-	text := strings.TrimSpace(entry.GetEqualFoldAttributeValue(attribute))
-	raw := entry.GetEqualFoldRawAttributeValue(attribute)
+	values := entry.GetEqualFoldRawAttributeValues(attribute)
+	if len(values) != 1 || len(values[0]) == 0 {
+		return "", fmt.Errorf("LDAP subject attribute %q must contain exactly one non-empty value", attribute)
+	}
+	raw := values[0]
 
 	if strings.EqualFold(attribute, "objectGUID") || strings.EqualFold(attribute, "objectSid") {
-		if len(raw) == 0 {
-			return "", fmt.Errorf("LDAP subject attribute %q is missing", attribute)
-		}
 		return strings.ToLower(attribute) + ":" + hex.EncodeToString(raw), nil
 	}
-	if text != "" && utf8.ValidString(text) {
-		return strings.ToLower(attribute) + ":" + text, nil
+	if utf8.Valid(raw) {
+		return strings.ToLower(attribute) + ":" + string(raw), nil
 	}
-	if len(raw) > 0 {
-		return strings.ToLower(attribute) + ":" + hex.EncodeToString(raw), nil
-	}
-	return "", fmt.Errorf("LDAP subject attribute %q is missing", attribute)
+	return "", fmt.Errorf("LDAP subject attribute %q is binary but has no supported canonical encoding", attribute)
 }
 
 func groupsAllowed(actual, required []string, mode string) bool {

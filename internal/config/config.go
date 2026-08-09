@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ import (
 )
 
 const EntryKey = "ldap"
+
+var attributeDescriptionPattern = regexp.MustCompile(`^(?:[A-Za-z][A-Za-z0-9-]*|[0-9]+(?:\.[0-9]+)+)(?:;[A-Za-z0-9-]+)*$`)
 
 var knownFields = map[string]struct{}{
 	"url": {}, "start_tls": {}, "allow_insecure_plaintext": {}, "insecure_skip_verify": {},
@@ -200,6 +203,20 @@ func (c Config) Validate() error {
 	}
 	if c.SubjectAttribute == "" {
 		return fmt.Errorf("subject attribute is required")
+	}
+	attributes := []struct {
+		field string
+		value string
+	}{
+		{field: "subject", value: c.SubjectAttribute},
+		{field: "display name", value: c.DisplayNameAttribute},
+		{field: "email", value: c.EmailAttribute},
+		{field: "group", value: c.GroupAttribute},
+	}
+	for _, attribute := range attributes {
+		if attribute.value != "" && !attributeDescriptionPattern.MatchString(attribute.value) {
+			return fmt.Errorf("%s attribute is not a valid LDAP attribute description", attribute.field)
+		}
 	}
 	if (len(c.RequiredGroups) > 0 || len(c.AdminGroups) > 0) && c.GroupAttribute == "" {
 		return fmt.Errorf("group attribute is required when group access or role mapping is configured")

@@ -140,6 +140,30 @@ func TestValidateCompilesFilterAndRequiresPlaceholder(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMalformedAttributeDescriptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "subject selector", mutate: func(cfg *Config) { cfg.SubjectAttribute = "*" }},
+		{name: "subject whitespace", mutate: func(cfg *Config) { cfg.SubjectAttribute = "entry UUID" }},
+		{name: "display colon", mutate: func(cfg *Config) { cfg.DisplayNameAttribute = "display:name" }},
+		{name: "email empty option", mutate: func(cfg *Config) { cfg.EmailAttribute = "mail;" }},
+		{name: "group invalid OID", mutate: func(cfg *Config) { cfg.GroupAttribute = "1..2" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.URL = "ldaps://ldap.example.com:636"
+			cfg.BaseDN = "dc=example,dc=com"
+			test.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("Validate() accepted a malformed LDAP attribute description")
+			}
+		})
+	}
+}
+
 func TestValidateRejectsUnsupportedURLComponents(t *testing.T) {
 	for _, rawURL := range []string{
 		"ldaps://user:pass@ldap.example.com:636",

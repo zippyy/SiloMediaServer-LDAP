@@ -302,6 +302,37 @@ func TestStableSubjectUsesBinaryObjectGUID(t *testing.T) {
 	}
 }
 
+func TestStableSubjectPreservesExactText(t *testing.T) {
+	entry := ldap.NewEntry("uid=alice,dc=example,dc=com", map[string][]string{
+		"entryUUID": {" subject-1 "},
+	})
+	subject, err := stableSubject(entry, "entryUUID")
+	if err != nil {
+		t.Fatalf("stableSubject returned an error: %v", err)
+	}
+	if subject != "entryuuid: subject-1 " {
+		t.Fatalf("subject = %q, want exact attribute whitespace preserved", subject)
+	}
+}
+
+func TestStableSubjectRejectsMultipleValues(t *testing.T) {
+	entry := ldap.NewEntry("uid=alice,dc=example,dc=com", map[string][]string{
+		"externalID": {"subject-1", "subject-2"},
+	})
+	if _, err := stableSubject(entry, "externalID"); err == nil {
+		t.Fatal("stableSubject accepted a multivalued identity attribute")
+	}
+}
+
+func TestStableSubjectRejectsUnsupportedBinaryValue(t *testing.T) {
+	entry := &ldap.Entry{Attributes: []*ldap.EntryAttribute{{
+		Name: "externalID", ByteValues: [][]byte{{0xff, 0x00, 0x7f}},
+	}}}
+	if _, err := stableSubject(entry, "externalID"); err == nil {
+		t.Fatal("stableSubject accepted a binary attribute without a canonical encoding")
+	}
+}
+
 func TestBuildUserFilterEscapesEveryUsernamePlaceholder(t *testing.T) {
 	username := "nick*)(|(objectClass=*))"
 	filter, err := buildUserFilter(
@@ -371,15 +402,12 @@ func validTestConfig() config.Config {
 }
 
 func testUserEntry(dn, group string) *ldap.Entry {
-	return &ldap.Entry{
-		DN: dn,
-		Attributes: []*ldap.EntryAttribute{
-			{Name: "entryUUID", Values: []string{"subject-1"}},
-			{Name: "displayName", Values: []string{"Alice"}},
-			{Name: "mail", Values: []string{"alice@example.com"}},
-			{Name: "memberOf", Values: []string{group}},
-		},
-	}
+	return ldap.NewEntry(dn, map[string][]string{
+		"entryUUID":   {"subject-1"},
+		"displayName": {"Alice"},
+		"mail":        {"alice@example.com"},
+		"memberOf":    {group},
+	})
 }
 
 type recordingConn struct {
