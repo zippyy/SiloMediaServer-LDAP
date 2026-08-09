@@ -1,16 +1,27 @@
 package config
 
 import (
+	"crypto/x509"
 	"fmt"
+	"math"
 	"net/url"
-	"strconv"
+	"sort"
 	"strings"
 	"time"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
+	"github.com/go-ldap/ldap/v3"
 )
 
 const EntryKey = "ldap"
+
+var knownFields = map[string]struct{}{
+	"url": {}, "start_tls": {}, "allow_insecure_plaintext": {}, "insecure_skip_verify": {},
+	"server_name": {}, "ca_pem": {}, "bind_dn": {}, "bind_password": {}, "base_dn": {},
+	"user_filter": {}, "subject_attribute": {}, "display_name_attribute": {}, "email_attribute": {},
+	"group_attribute": {}, "required_groups": {}, "group_match_mode": {}, "role_sync_enabled": {},
+	"admin_groups": {}, "admin_group_match_mode": {}, "timeout_seconds": {},
+}
 
 type Config struct {
 	URL                    string
@@ -52,36 +63,91 @@ func Decode(entries []*pluginv1.ConfigEntry) (Config, bool, error) {
 	cfg := Default()
 	var values map[string]any
 	for _, entry := range entries {
-		if entry == nil || strings.TrimSpace(entry.GetKey()) != EntryKey || entry.GetValue() == nil {
+		if entry == nil || entry.GetKey() != EntryKey {
 			continue
 		}
+		if values != nil {
+			return Config{}, true, fmt.Errorf("duplicate %q configuration entry", EntryKey)
+		}
+		if entry.GetValue() == nil {
+			return Config{}, true, fmt.Errorf("configuration value must be an object")
+		}
 		values = entry.GetValue().AsMap()
-		break
 	}
 	if values == nil {
 		return cfg, false, nil
 	}
+	if err := rejectUnknownFields(values); err != nil {
+		return Config{}, true, err
+	}
 
-	cfg.URL = stringValue(values, "url", cfg.URL)
-	cfg.StartTLS = boolValue(values, "start_tls", cfg.StartTLS)
-	cfg.AllowInsecurePlaintext = boolValue(values, "allow_insecure_plaintext", cfg.AllowInsecurePlaintext)
-	cfg.InsecureSkipVerify = boolValue(values, "insecure_skip_verify", cfg.InsecureSkipVerify)
-	cfg.ServerName = stringValue(values, "server_name", cfg.ServerName)
-	cfg.CAPEM = stringValue(values, "ca_pem", cfg.CAPEM)
-	cfg.BindDN = stringValue(values, "bind_dn", cfg.BindDN)
-	cfg.BindPassword = rawStringValue(values, "bind_password", cfg.BindPassword)
-	cfg.BaseDN = stringValue(values, "base_dn", cfg.BaseDN)
-	cfg.UserFilter = stringValue(values, "user_filter", cfg.UserFilter)
-	cfg.SubjectAttribute = stringValue(values, "subject_attribute", cfg.SubjectAttribute)
-	cfg.DisplayNameAttribute = stringValue(values, "display_name_attribute", cfg.DisplayNameAttribute)
-	cfg.EmailAttribute = stringValue(values, "email_attribute", cfg.EmailAttribute)
-	cfg.GroupAttribute = stringValue(values, "group_attribute", cfg.GroupAttribute)
-	cfg.RequiredGroups = splitList(stringValue(values, "required_groups", ""))
-	cfg.GroupMatchMode = strings.ToLower(stringValue(values, "group_match_mode", cfg.GroupMatchMode))
-	cfg.RoleSyncEnabled = boolValue(values, "role_sync_enabled", cfg.RoleSyncEnabled)
-	cfg.AdminGroups = splitList(stringValue(values, "admin_groups", ""))
-	cfg.AdminGroupMatchMode = strings.ToLower(stringValue(values, "admin_group_match_mode", cfg.AdminGroupMatchMode))
-	cfg.TimeoutSeconds = intValue(values, "timeout_seconds", cfg.TimeoutSeconds)
+	var err error
+	if cfg.URL, err = stringField(values, "url", cfg.URL, true); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.StartTLS, err = boolField(values, "start_tls", cfg.StartTLS); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.AllowInsecurePlaintext, err = boolField(values, "allow_insecure_plaintext", cfg.AllowInsecurePlaintext); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.InsecureSkipVerify, err = boolField(values, "insecure_skip_verify", cfg.InsecureSkipVerify); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.ServerName, err = stringField(values, "server_name", cfg.ServerName, true); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.CAPEM, err = stringField(values, "ca_pem", cfg.CAPEM, false); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.BindDN, err = stringField(values, "bind_dn", cfg.BindDN, true); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.BindPassword, err = stringField(values, "bind_password", cfg.BindPassword, false); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.BaseDN, err = stringField(values, "base_dn", cfg.BaseDN, true); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.UserFilter, err = stringField(values, "user_filter", cfg.UserFilter, true); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.SubjectAttribute, err = stringField(values, "subject_attribute", cfg.SubjectAttribute, true); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.DisplayNameAttribute, err = stringField(values, "display_name_attribute", cfg.DisplayNameAttribute, true); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.EmailAttribute, err = stringField(values, "email_attribute", cfg.EmailAttribute, true); err != nil {
+		return Config{}, true, err
+	}
+	if cfg.GroupAttribute, err = stringField(values, "group_attribute", cfg.GroupAttribute, true); err != nil {
+		return Config{}, true, err
+	}
+	requiredGroups, err := stringField(values, "required_groups", "", true)
+	if err != nil {
+		return Config{}, true, err
+	}
+	cfg.RequiredGroups = splitList(requiredGroups)
+	if cfg.GroupMatchMode, err = stringField(values, "group_match_mode", cfg.GroupMatchMode, true); err != nil {
+		return Config{}, true, err
+	}
+	cfg.GroupMatchMode = strings.ToLower(cfg.GroupMatchMode)
+	if cfg.RoleSyncEnabled, err = boolField(values, "role_sync_enabled", cfg.RoleSyncEnabled); err != nil {
+		return Config{}, true, err
+	}
+	adminGroups, err := stringField(values, "admin_groups", "", true)
+	if err != nil {
+		return Config{}, true, err
+	}
+	cfg.AdminGroups = splitList(adminGroups)
+	if cfg.AdminGroupMatchMode, err = stringField(values, "admin_group_match_mode", cfg.AdminGroupMatchMode, true); err != nil {
+		return Config{}, true, err
+	}
+	cfg.AdminGroupMatchMode = strings.ToLower(cfg.AdminGroupMatchMode)
+	if cfg.TimeoutSeconds, err = intField(values, "timeout_seconds", cfg.TimeoutSeconds); err != nil {
+		return Config{}, true, err
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, true, err
@@ -90,7 +156,7 @@ func Decode(entries []*pluginv1.ConfigEntry) (Config, bool, error) {
 }
 
 func (c Config) Validate() error {
-	parsed, err := url.Parse(strings.TrimSpace(c.URL))
+	parsed, err := url.Parse(c.URL)
 	if err != nil {
 		return fmt.Errorf("invalid LDAP URL: %w", err)
 	}
@@ -100,25 +166,42 @@ func (c Config) Validate() error {
 	if parsed.Hostname() == "" {
 		return fmt.Errorf("LDAP URL must include a hostname")
 	}
+	if parsed.User != nil || parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
+		return fmt.Errorf("LDAP URL must contain only a scheme, hostname, and optional port")
+	}
 	if parsed.Scheme == "ldaps" && c.StartTLS {
 		return fmt.Errorf("StartTLS cannot be enabled with an ldaps:// URL")
+	}
+	if c.AllowInsecurePlaintext && (parsed.Scheme != "ldap" || c.StartTLS) {
+		return fmt.Errorf("allow insecure plaintext is only valid for ldap:// without StartTLS")
 	}
 	if parsed.Scheme == "ldap" && !c.StartTLS && !c.AllowInsecurePlaintext {
 		return fmt.Errorf("plaintext LDAP is disabled; enable StartTLS or explicitly allow insecure plaintext LDAP")
 	}
-	if (strings.TrimSpace(c.BindDN) == "") != (c.BindPassword == "") {
+	usesTLS := parsed.Scheme == "ldaps" || c.StartTLS
+	if !usesTLS && (c.InsecureSkipVerify || c.ServerName != "" || strings.TrimSpace(c.CAPEM) != "") {
+		return fmt.Errorf("TLS settings require LDAPS or StartTLS")
+	}
+	if (c.BindDN == "") != (c.BindPassword == "") {
 		return fmt.Errorf("bind DN and bind password must either both be set or both be empty")
 	}
-	if strings.TrimSpace(c.BaseDN) == "" {
+	if c.BaseDN == "" {
 		return fmt.Errorf("base DN is required")
 	}
-	if strings.TrimSpace(c.UserFilter) == "" || !strings.Contains(c.UserFilter, "{username}") {
+	if _, err := ldap.ParseDN(c.BaseDN); err != nil {
+		return fmt.Errorf("base DN is invalid: %w", err)
+	}
+	if c.UserFilter == "" || !strings.Contains(c.UserFilter, "{username}") {
 		return fmt.Errorf("user filter must contain {username}")
 	}
-	if strings.TrimSpace(c.SubjectAttribute) == "" {
+	compiledFilter := strings.ReplaceAll(c.UserFilter, "{username}", ldap.EscapeFilter("silo-config-validation"))
+	if _, err := ldap.CompileFilter(compiledFilter); err != nil {
+		return fmt.Errorf("user filter is invalid: %w", err)
+	}
+	if c.SubjectAttribute == "" {
 		return fmt.Errorf("subject attribute is required")
 	}
-	if (len(c.RequiredGroups) > 0 || len(c.AdminGroups) > 0) && strings.TrimSpace(c.GroupAttribute) == "" {
+	if (len(c.RequiredGroups) > 0 || len(c.AdminGroups) > 0) && c.GroupAttribute == "" {
 		return fmt.Errorf("group attribute is required when group access or role mapping is configured")
 	}
 	if c.GroupMatchMode != "any" && c.GroupMatchMode != "all" {
@@ -133,6 +216,12 @@ func (c Config) Validate() error {
 	if c.TimeoutSeconds < 1 || c.TimeoutSeconds > 60 {
 		return fmt.Errorf("timeout must be between 1 and 60 seconds")
 	}
+	if strings.TrimSpace(c.CAPEM) != "" {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM([]byte(c.CAPEM)) {
+			return fmt.Errorf("custom CA PEM did not contain a valid certificate")
+		}
+	}
 	return nil
 }
 
@@ -140,65 +229,57 @@ func (c Config) Timeout() time.Duration {
 	return time.Duration(c.TimeoutSeconds) * time.Second
 }
 
-func stringValue(values map[string]any, key, fallback string) string {
+func rejectUnknownFields(values map[string]any) error {
+	unknown := make([]string, 0)
+	for key := range values {
+		if _, ok := knownFields[key]; !ok {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("unknown configuration field %q", unknown[0])
+}
+
+func stringField(values map[string]any, key, fallback string, trim bool) (string, error) {
 	value, ok := values[key]
-	if !ok || value == nil {
-		return fallback
+	if !ok {
+		return fallback, nil
 	}
 	text, ok := value.(string)
 	if !ok {
-		return fallback
+		return "", fmt.Errorf("configuration field %q must be a string", key)
 	}
-	return strings.TrimSpace(text)
+	if trim {
+		text = strings.TrimSpace(text)
+	}
+	return text, nil
 }
 
-func rawStringValue(values map[string]any, key, fallback string) string {
+func boolField(values map[string]any, key string, fallback bool) (bool, error) {
 	value, ok := values[key]
-	if !ok || value == nil {
-		return fallback
-	}
-	text, ok := value.(string)
 	if !ok {
-		return fallback
-	}
-	return text
-}
-
-func boolValue(values map[string]any, key string, fallback bool) bool {
-	value, ok := values[key]
-	if !ok || value == nil {
-		return fallback
+		return fallback, nil
 	}
 	result, ok := value.(bool)
 	if !ok {
-		return fallback
+		return false, fmt.Errorf("configuration field %q must be a boolean", key)
 	}
-	return result
+	return result, nil
 }
 
-func intValue(values map[string]any, key string, fallback int) int {
+func intField(values map[string]any, key string, fallback int) (int, error) {
 	value, ok := values[key]
-	if !ok || value == nil {
-		return fallback
+	if !ok {
+		return fallback, nil
 	}
-	switch typed := value.(type) {
-	case float64:
-		return int(typed)
-	case float32:
-		return int(typed)
-	case int:
-		return typed
-	case int32:
-		return int(typed)
-	case int64:
-		return int(typed)
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
-		if err == nil {
-			return parsed
-		}
+	number, ok := value.(float64)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) || math.Trunc(number) != number {
+		return 0, fmt.Errorf("configuration field %q must be an integer number", key)
 	}
-	return fallback
+	return int(number), nil
 }
 
 func splitList(value string) []string {
@@ -212,11 +293,10 @@ func splitList(value string) []string {
 		if part == "" {
 			continue
 		}
-		key := strings.ToLower(part)
-		if _, exists := seen[key]; exists {
+		if _, exists := seen[part]; exists {
 			continue
 		}
-		seen[key] = struct{}{}
+		seen[part] = struct{}{}
 		result = append(result, part)
 	}
 	return result
