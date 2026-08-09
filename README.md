@@ -19,10 +19,12 @@ The plugin implements Silo's `auth_provider.v1` password flow and supports:
 1. Silo sends the submitted username and password to the plugin.
 2. The plugin connects to LDAP and optionally binds with a read-only search account.
 3. It searches for exactly one user with the configured filter.
-4. It checks optional direct group membership from the configured group attribute.
-5. It binds as the discovered user DN with the submitted password.
-6. It returns a stable external subject, display name, email address, DN, groups, and an optional Silo role claim.
-7. Silo creates the session, optionally provisions the account, and synchronizes an advertised role.
+4. It binds as the discovered user DN with the submitted password.
+5. Only after a successful password bind does it check optional direct group membership.
+6. It returns a stable external subject, display name, email address, and, when enabled, versioned managed-role claims.
+7. Silo creates the session, optionally provisions the account, and applies a role only when the host authorized the advertised managed-role contract.
+
+Zero-result, multiple-result, and server size-limit searches perform a bind attempt against a reserved dummy DN before returning the same invalid-login result. This removes the most obvious password-bind operation-count oracle; it is not a claim of cryptographic constant-time behavior or indistinguishable directory response timing.
 
 The plugin never stores user passwords and does not log credentials.
 
@@ -54,6 +56,8 @@ The plugin never stores user passwords and does not log credentials.
 
 `{username}` is escaped with LDAP filter escaping before the search is performed.
 
+The external subject includes the lowercased subject-attribute name and its value. Binary `objectGUID` and `objectSid` values are hex encoded. Changing the configured subject attribute changes the Silo identity namespace and can provision a different Silo account, so treat that setting as immutable after users first sign in.
+
 ## Active Directory group and role mapping
 
 For the `nbennett.xyz` directory, use:
@@ -72,6 +76,8 @@ When role synchronization is enabled:
 - promotions and demotions are applied on the next successful LDAP login;
 - removing a user from the administrator group demotes that account back to normal user permissions.
 
+Role authority uses the temporary versioned `silo.auth.managed-role.v1` host extension. The plugin emits `silo_role_contract`, `silo_role_managed`, and `silo_role` only when role synchronization is enabled. A compatible Silo host must also authorize that exact contract from the installed capability metadata; a bare role claim is not authoritative.
+
 Administrator accounts must still satisfy the sign-in allowlist. Add administrators to both groups, nest the administrator group inside the user group where your directory exposes the membership as required, or include both group DNs in the sign-in allowlist with **Any configured group** selected.
 
 ## Security defaults
@@ -82,8 +88,9 @@ Administrator accounts must still satisfy the sign-in allowlist. Add administrat
 - Certificate verification is enabled by default.
 - A private CA certificate can be supplied in PEM format.
 - User searches are limited to two results and authentication fails unless exactly one entry matches.
-- Missing users, wrong passwords, and denied groups produce the same login result.
-- Only `user` and `admin` are accepted from the reserved `silo_role` claim.
+- Missing users, ambiguous users, wrong passwords, and denied groups produce the same caller-visible login result. Found users are password-verified before group authorization.
+- One absolute deadline, bounded by the host request context, covers TCP connection setup, LDAPS or StartTLS negotiation, binds, searches, and connection testing. Cancellation closes the socket to wake blocked LDAP I/O.
+- Managed-role claims are limited to `user` and `admin`. They are not applied unless both plugin and host opt into the exact v1 contract; malformed authoritative claims fail authentication closed.
 
 Keep a working local Silo administrator account for recovery.
 
@@ -93,7 +100,7 @@ Go 1.26 or newer is required because the current Silo plugin SDK requires it.
 
 ```bash
 go test ./...
-make build VERSION=0.3.0
+make build VERSION=0.4.0
 ```
 
 The resulting binary is written to `dist/silo-plugin-auth-ldap`.
@@ -111,9 +118,17 @@ The workflow also generates platform-specific manifests with the binary checksum
 ## Current limitations
 
 - Group checks use direct values on the configured user attribute, normally `memberOf`.
+- When both a configured group and a returned value parse as LDAP DNs, comparison is structural and case-insensitive for practical AD, Synology, and OpenLDAP interoperability. RDN order remains significant, while attribute order inside a multi-valued RDN does not. This is not full schema-aware LDAP matching-rule evaluation.
+- Values that do not parse as DNs are treated as opaque, trimmed, case-sensitive strings. This supports custom group attributes without pretending they have DN semantics.
 - Nested Active Directory group resolution is not yet implemented.
 - LDAP groups do not yet map to individual Silo libraries or granular permissions.
 - Password changes, account linking, and full LDAP directory synchronization are outside the password-provider contract.
+
+## What Test connection verifies
+
+Silo calls the SDK `request_router.v1` `TestConnection` RPC for the LDAP configuration key and requires an explicit `ok: true` response. The check uses the same absolute timeout, network transport, certificate verification, optional StartTLS, and optional search-account bind as authentication. It then executes the configured user filter under the base DN while requesting no user attributes.
+
+The check does not bind as a real user, verify a user password, require configured group objects to be readable, prove group membership visibility, or prove that the configured subject/display/email attributes are populated on every account. Those checks require a real directory account and remain deployment validation tasks.
 
 ## License
 
