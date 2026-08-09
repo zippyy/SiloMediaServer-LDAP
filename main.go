@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
@@ -14,6 +13,7 @@ import (
 	sdkruntime "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtime"
 	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtimedefault"
 	"github.com/zippyy/SiloMediaServer-LDAP/internal/config"
+	"github.com/zippyy/SiloMediaServer-LDAP/internal/hostcontract"
 	"github.com/zippyy/SiloMediaServer-LDAP/internal/ldapauth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -31,6 +31,11 @@ type runtimeServer struct {
 
 	manifest *pluginv1.PluginManifest
 	auth     *authServer
+}
+
+type directoryAuthenticator interface {
+	Authenticate(context.Context, string, string) (*ldapauth.User, error)
+	CheckConnection(context.Context) error
 }
 
 func (s *runtimeServer) GetManifest(context.Context, *pluginv1.GetManifestRequest) (*pluginv1.GetManifestResponse, error) {
@@ -56,28 +61,25 @@ type authServer struct {
 	pluginv1.UnimplementedAuthProviderServer
 
 	mu            sync.RWMutex
-	authenticator *ldapauth.Authenticator
+	authenticator directoryAuthenticator
 }
 
-func (s *authServer) SetAuthenticator(authenticator *ldapauth.Authenticator) {
+func (s *authServer) SetAuthenticator(authenticator directoryAuthenticator) {
 	s.mu.Lock()
 	s.authenticator = authenticator
 	s.mu.Unlock()
 }
 
-func (s *authServer) Authenticate(ctx context.Context, req *pluginv1.AuthenticateRequest) (*pluginv1.AuthenticateResponse, error) {
+func (s *authServer) Authenticator() directoryAuthenticator {
 	s.mu.RLock()
-	authenticator := s.authenticator
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
+	return s.authenticator
+}
+
+func (s *authServer) Authenticate(ctx context.Context, req *pluginv1.AuthenticateRequest) (*pluginv1.AuthenticateResponse, error) {
+	authenticator := s.Authenticator()
 	if authenticator == nil {
 		return nil, status.Error(codes.FailedPrecondition, "LDAP authentication is not configured")
-	}
-
-	if connectionTestRequested(req.GetMetadata()) {
-		if err := authenticator.CheckConnection(ctx); err != nil {
-			return nil, status.Errorf(codes.Unavailable, "LDAP connection check failed: %v", err)
-		}
-		return &pluginv1.AuthenticateResponse{}, nil
 	}
 
 	user, err := authenticator.Authenticate(ctx, req.GetUsername(), req.GetPassword())
@@ -85,22 +87,21 @@ func (s *authServer) Authenticate(ctx context.Context, req *pluginv1.Authenticat
 		if errors.Is(err, ldapauth.ErrInvalidCredentials) || errors.Is(err, ldapauth.ErrGroupDenied) {
 			return &pluginv1.AuthenticateResponse{}, nil
 		}
-		stage := ldapAuthenticationFailureStage(err)
-		slog.Error("LDAP authentication failed", "stage", stage, "error", err)
-		return nil, status.Errorf(codes.Unavailable, "LDAP authentication failed during %s: %v", stage, err)
+		stage := ldapauth.FailureStage(err)
+		slog.ErrorContext(ctx, "LDAP authentication failed", "stage", stage, "error", err)
+		return nil, status.Errorf(codes.Unavailable, "LDAP authentication failed during %s", stage)
 	}
 
-	claimValues := map[string]any{
-		"username": user.Username,
-		"dn":       user.DN,
-		"groups":   stringsToAny(user.Groups),
-	}
+	var claims *structpb.Struct
 	if user.Role != "" {
-		claimValues["silo_role"] = user.Role
-	}
-	claims, err := structpb.NewStruct(claimValues)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "could not construct LDAP identity claims")
+		claims, err = structpb.NewStruct(map[string]any{
+			hostcontract.RoleContractClaim: hostcontract.ManagedRoleV1,
+			hostcontract.RoleManagedClaim:  true,
+			hostcontract.RoleClaim:         user.Role,
+		})
+		if err != nil {
+			return nil, status.Error(codes.Internal, "could not construct managed-role claims")
+		}
 	}
 	return &pluginv1.AuthenticateResponse{
 		ExternalSubject: user.Subject,
@@ -110,50 +111,25 @@ func (s *authServer) Authenticate(ctx context.Context, req *pluginv1.Authenticat
 	}, nil
 }
 
-func ldapAuthenticationFailureStage(err error) string {
-	if err == nil {
-		return "unknown"
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "timeout"
-	}
-	if errors.Is(err, context.Canceled) {
-		return "request"
-	}
-
-	message := err.Error()
-	switch {
-	case strings.HasPrefix(message, "connect to LDAP:"):
-		return "connection"
-	case strings.HasPrefix(message, "bind LDAP search account:"):
-		return "search-account bind"
-	case strings.HasPrefix(message, "compile LDAP user filter:"):
-		return "user-filter compilation"
-	case strings.HasPrefix(message, "search LDAP user:"):
-		return "user search"
-	case strings.HasPrefix(message, "bind LDAP user:"):
-		return "user bind"
-	case strings.HasPrefix(message, "LDAP subject attribute"):
-		return "stable-subject mapping"
-	default:
-		return "directory processing"
-	}
+type connectionServer struct {
+	pluginv1.UnimplementedRequestRouterServer
+	auth *authServer
 }
 
-func connectionTestRequested(metadata *structpb.Struct) bool {
-	if metadata == nil {
-		return false
+func (s *connectionServer) TestConnection(ctx context.Context, req *pluginv1.TestConnectionRequest) (*pluginv1.TestConnectionResponse, error) {
+	if req.GetCapabilityId() != config.EntryKey {
+		return nil, status.Error(codes.InvalidArgument, "unsupported connection-test capability")
 	}
-	value, ok := metadata.AsMap()["connection_test"].(bool)
-	return ok && value
-}
-
-func stringsToAny(values []string) []any {
-	result := make([]any, len(values))
-	for index, value := range values {
-		result[index] = value
+	authenticator := s.auth.Authenticator()
+	if authenticator == nil {
+		return nil, status.Error(codes.FailedPrecondition, "LDAP authentication is not configured")
 	}
-	return result
+	if err := authenticator.CheckConnection(ctx); err != nil {
+		stage := ldapauth.FailureStage(err)
+		slog.ErrorContext(ctx, "LDAP connection check failed", "stage", stage, "error", err)
+		return nil, status.Errorf(codes.Unavailable, "LDAP connection check failed during %s", stage)
+	}
+	return &pluginv1.TestConnectionResponse{Ok: true}, nil
 }
 
 func main() {
@@ -163,6 +139,7 @@ func main() {
 	}
 
 	auth := &authServer{}
+	connections := &connectionServer{auth: auth}
 	runtime := &runtimeServer{
 		manifest: manifest,
 		auth:     auth,
@@ -170,8 +147,9 @@ func main() {
 
 	sdkruntime.Serve(sdkruntime.ServeConfig{
 		Servers: sdkruntime.CapabilityServers{
-			Runtime:      runtime,
-			AuthProvider: auth,
+			Runtime:       runtime,
+			AuthProvider:  auth,
+			RequestRouter: connections,
 		},
 	})
 }
