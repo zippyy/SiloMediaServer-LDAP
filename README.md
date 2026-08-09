@@ -11,7 +11,6 @@ The plugin implements Silo's `auth_provider.v1` password flow and supports:
 - Stable Silo identities through `entryUUID`, `objectGUID`, or another configured attribute
 - Optional direct LDAP group allowlisting
 - Optional LDAP administrator-group to Silo-role synchronization
-- Configuration connection testing
 - Linux AMD64 and ARM64 builds for common Docker and Synology deployments
 
 ## Authentication flow
@@ -60,14 +59,14 @@ The external subject includes the lowercased subject-attribute name and one exac
 
 ## Active Directory group and role mapping
 
-For the `nbennett.xyz` directory, use:
+For a typical Active Directory deployment, use:
 
 | Purpose | Group DN |
 | --- | --- |
-| Allowed normal users | `CN=JellyfinUsers,OU=groups,DC=nbennett,DC=xyz` |
-| Silo administrators | `CN=JellyfinAdmins,OU=groups,DC=nbennett,DC=xyz` |
+| Allowed normal users | `CN=SiloUsers,OU=Groups,DC=example,DC=com` |
+| Silo administrators | `CN=SiloAdmins,OU=Groups,DC=example,DC=com` |
 
-Configure the user group under **Sign-in group DNs**, enable **Synchronize Silo roles from LDAP**, and place the administrator group under **Administrator group DNs**.
+Configure the user group under **Sign-in group DNs**, enable **Synchronize Silo roles from LDAP**, place the administrator group under **Administrator group DNs**, and explicitly enable **Allow managed Silo roles** on the Silo authentication binding.
 
 When role synchronization is enabled:
 
@@ -76,7 +75,7 @@ When role synchronization is enabled:
 - promotions and demotions are applied on the next successful LDAP login;
 - removing a user from the administrator group demotes that account back to normal user permissions.
 
-Role authority uses the temporary versioned `silo.auth.managed-role.v1` host extension. The plugin emits `silo_role_contract`, `silo_role_managed`, and `silo_role` only when role synchronization is enabled. A compatible Silo host must also authorize that exact contract from the installed capability metadata; a bare role claim is not authoritative.
+Role authority uses the temporary versioned `silo.auth.managed-role.v1` host extension. The plugin emits `silo_role_contract`, `silo_role_managed`, and `silo_role` only when role synchronization is enabled. A compatible Silo host must recognize the exact advertised contract and the operator must explicitly allow managed roles on the authentication binding; a bare role claim is not authoritative. If LDAP role synchronization is enabled while the binding is not authorized, authentication fails closed.
 
 Administrator accounts must still satisfy the sign-in allowlist. Add administrators to both groups, nest the administrator group inside the user group where your directory exposes the membership as required, or include both group DNs in the sign-in allowlist with **Any configured group** selected.
 
@@ -89,7 +88,7 @@ Administrator accounts must still satisfy the sign-in allowlist. Add administrat
 - A private CA certificate can be supplied in PEM format.
 - User searches are limited to two results and authentication fails unless exactly one entry matches.
 - Missing users, ambiguous users, wrong passwords, and denied groups produce the same caller-visible login result. Found users are password-verified before group authorization.
-- One absolute deadline, bounded by the host request context, covers TCP connection setup, LDAPS or StartTLS negotiation, binds, searches, and connection testing. Cancellation closes the socket to wake blocked LDAP I/O.
+- One absolute deadline, bounded by the host request context, covers TCP connection setup, LDAPS or StartTLS negotiation, binds, and searches. Cancellation closes the socket to wake blocked LDAP I/O.
 - Managed-role claims are limited to `user` and `admin`. They are not applied unless both plugin and host opt into the exact v1 contract; malformed authoritative claims fail authentication closed.
 
 Keep a working local Silo administrator account for recovery.
@@ -124,11 +123,9 @@ The workflow also generates platform-specific manifests with the binary checksum
 - LDAP groups do not yet map to individual Silo libraries or granular permissions.
 - Password changes, account linking, and full LDAP directory synchronization are outside the password-provider contract.
 
-## What Test connection verifies
+## Connection validation
 
-Silo calls the SDK `request_router.v1` `TestConnection` RPC for the LDAP configuration key and requires an explicit `ok: true` response. The check uses the same absolute timeout, network transport, certificate verification, optional StartTLS, and optional search-account bind as authentication. It then executes the configured user filter under the base DN while requesting no user attributes.
-
-The check does not bind as a real user, verify a user password, require configured group objects to be readable, prove group membership visibility, or prove that the configured subject/display/email attributes are populated on every account. Those checks require a real directory account and remain deployment validation tasks.
+The current Silo plugin SDK has no generic or authentication-provider connection-test RPC. This plugin therefore does not advertise the media-oriented `request_router.v1` capability or provide a Test connection action. Validate network reachability, TLS trust, search-account permissions, user search, password bind, and group visibility with a non-production directory account before rollout. A future connection-test feature requires an SDK-owned auth/config validation contract.
 
 ## License
 
