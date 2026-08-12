@@ -9,6 +9,8 @@ require (
 	google.golang.org/protobuf v1.36.11
 )
 
+replace github.com/Silo-Server/silo-plugin-sdk => github.com/zippyy/silo-plugin-sdk v0.0.0-20260812005152-96cff1e38a04
+
 require (
 	github.com/Azure/go-ntlmssp v0.1.1 // indirect
 	github.com/fatih/color v1.13.0 // indirect

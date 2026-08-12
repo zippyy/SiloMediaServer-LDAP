@@ -13,12 +13,10 @@ import (
 	sdkruntime "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtime"
 	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtimedefault"
 	"github.com/zippyy/SiloMediaServer-LDAP/internal/config"
-	"github.com/zippyy/SiloMediaServer-LDAP/internal/hostcontract"
 	"github.com/zippyy/SiloMediaServer-LDAP/internal/ldapauth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var version string
@@ -35,6 +33,44 @@ type runtimeServer struct {
 
 type directoryAuthenticator interface {
 	Authenticate(context.Context, string, string) (*ldapauth.User, error)
+}
+
+type directoryConnectionTester interface {
+	TestConnection(context.Context) error
+}
+
+type configurationServer struct {
+	pluginv1.UnimplementedAuthProviderConfigurationServer
+	newTester func(config.Config) directoryConnectionTester
+}
+
+func (s *configurationServer) TestConnection(
+	ctx context.Context,
+	req *pluginv1.AuthProviderTestConnectionRequest,
+) (*pluginv1.AuthProviderTestConnectionResponse, error) {
+	if req.GetCapabilityId() != "ldap" {
+		return nil, status.Error(codes.InvalidArgument, "unknown authentication capability")
+	}
+	cfg, configured, err := config.Decode(req.GetConfig())
+	if err != nil || !configured {
+		return nil, status.Error(codes.InvalidArgument, "invalid LDAP configuration")
+	}
+	newTester := s.newTester
+	if newTester == nil {
+		newTester = func(cfg config.Config) directoryConnectionTester { return ldapauth.New(cfg) }
+	}
+	if err := newTester(cfg).TestConnection(ctx); err != nil {
+		stage := ldapauth.FailureStage(err)
+		slog.ErrorContext(ctx, "LDAP connection check failed", "stage", stage, "error", err)
+		return &pluginv1.AuthProviderTestConnectionResponse{
+			Ok:      false,
+			Message: fmt.Sprintf("LDAP connection check failed during %s.", stage),
+		}, nil
+	}
+	return &pluginv1.AuthProviderTestConnectionResponse{
+		Ok:      true,
+		Message: "LDAP connection check succeeded.",
+	}, nil
 }
 
 func (s *runtimeServer) GetManifest(context.Context, *pluginv1.GetManifestRequest) (*pluginv1.GetManifestResponse, error) {
@@ -91,22 +127,24 @@ func (s *authServer) Authenticate(ctx context.Context, req *pluginv1.Authenticat
 		return nil, status.Errorf(codes.Unavailable, "LDAP authentication failed during %s", stage)
 	}
 
-	var claims *structpb.Struct
+	var managedRole *pluginv1.ManagedSiloRoleAssertion
 	if user.Role != "" {
-		claims, err = structpb.NewStruct(map[string]any{
-			hostcontract.RoleContractClaim: hostcontract.ManagedRoleV1,
-			hostcontract.RoleManagedClaim:  true,
-			hostcontract.RoleClaim:         user.Role,
-		})
-		if err != nil {
-			return nil, status.Error(codes.Internal, "could not construct managed-role claims")
+		var role pluginv1.ManagedSiloRole
+		switch user.Role {
+		case "user":
+			role = pluginv1.ManagedSiloRole_MANAGED_SILO_ROLE_USER
+		case "admin":
+			role = pluginv1.ManagedSiloRole_MANAGED_SILO_ROLE_ADMIN
+		default:
+			return nil, status.Error(codes.Internal, "LDAP returned an unsupported managed role")
 		}
+		managedRole = &pluginv1.ManagedSiloRoleAssertion{Role: role}
 	}
 	return &pluginv1.AuthenticateResponse{
 		ExternalSubject: user.Subject,
 		DisplayName:     user.DisplayName,
 		Email:           user.Email,
-		Claims:          claims,
+		ManagedSiloRole: managedRole,
 	}, nil
 }
 
@@ -121,11 +159,18 @@ func main() {
 		manifest: manifest,
 		auth:     auth,
 	}
+	configuration := &configurationServer{}
+	servers := sdkruntime.CapabilityServers{
+		Runtime:      runtime,
+		AuthProvider: auth,
+	}
 
 	sdkruntime.Serve(sdkruntime.ServeConfig{
-		Servers: sdkruntime.CapabilityServers{
-			Runtime:      runtime,
-			AuthProvider: auth,
-		},
+		Servers: servers,
+		Plugins: sdkruntime.DefaultPluginSetWithAuthProviderConfiguration(
+			servers,
+			nil,
+			configuration,
+		),
 	})
 }

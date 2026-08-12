@@ -117,6 +117,59 @@ func TestAuthenticateExpiredContextDoesNotConnect(t *testing.T) {
 	}
 }
 
+func TestConnectionCheckUsesBoundedTransportBindAndBaseSearch(t *testing.T) {
+	operations := []string{}
+	connection := &fakeLDAPConnection{
+		operations: &operations,
+		result: &ldap.SearchResult{Entries: []*ldap.Entry{
+			ldap.NewEntry("dc=example,dc=com", map[string][]string{"objectClass": {"domain"}}),
+		}},
+		bindErrors: map[string]error{},
+	}
+	authenticator := testAuthenticator(connection, &operations)
+
+	if err := authenticator.TestConnection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"connect", "bind:cn=reader,dc=example,dc=com", "search", "close"}
+	if !slices.Equal(operations, want) {
+		t.Fatalf("operations = %#v, want %#v", operations, want)
+	}
+}
+
+func TestConnectionCheckFailsClosedWhenBaseIsNotVisible(t *testing.T) {
+	operations := []string{}
+	authenticator := testAuthenticator(&fakeLDAPConnection{
+		operations: &operations,
+		result:     &ldap.SearchResult{},
+		bindErrors: map[string]error{},
+	}, &operations)
+
+	err := authenticator.TestConnection(context.Background())
+	if err == nil || FailureStage(err) != StageDirectorySearch {
+		t.Fatalf("TestConnection() error = %v, stage = %q", err, FailureStage(err))
+	}
+}
+
+func TestConnectionCheckFailsClosedOnEmptyDirectoryResponse(t *testing.T) {
+	operations := []string{}
+	authenticator := testAuthenticator(&fakeLDAPConnection{
+		operations: &operations,
+		bindErrors: map[string]error{},
+	}, &operations)
+	// Prevent the fake from synthesizing an empty result so the new path also
+	// covers a malformed nil success response from a connector implementation.
+	authenticator.connect = func(context.Context, time.Time) (ldapConnection, error) {
+		operations = append(operations, "connect")
+		return &nilSearchResultConnection{operations: &operations}, nil
+	}
+
+	err := authenticator.TestConnection(context.Background())
+	if err == nil || FailureStage(err) != StageDirectorySearch {
+		t.Fatalf("TestConnection() error = %v, stage = %q", err, FailureStage(err))
+	}
+}
+
 func TestManagedConnectionCancellationWakesBlockedBind(t *testing.T) {
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = server.Close() })
@@ -347,6 +400,23 @@ type fakeLDAPConnection struct {
 	result     *ldap.SearchResult
 	searchErr  error
 	bindErrors map[string]error
+}
+
+type nilSearchResultConnection struct{ operations *[]string }
+
+func (c *nilSearchResultConnection) Bind(username, _ string) error {
+	*c.operations = append(*c.operations, "bind:"+username)
+	return nil
+}
+
+func (c *nilSearchResultConnection) Search(*ldap.SearchRequest) (*ldap.SearchResult, error) {
+	*c.operations = append(*c.operations, "search")
+	return nil, nil
+}
+
+func (c *nilSearchResultConnection) Close() error {
+	*c.operations = append(*c.operations, "close")
+	return nil
 }
 
 func (f *fakeLDAPConnection) Bind(username, _ string) error {

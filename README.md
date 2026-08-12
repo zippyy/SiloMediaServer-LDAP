@@ -20,8 +20,8 @@ The plugin implements Silo's `auth_provider.v1` password flow and supports:
 3. It searches for exactly one user with the configured filter.
 4. It binds as the discovered user DN with the submitted password.
 5. Only after a successful password bind does it check optional direct group membership.
-6. It returns a stable external subject, display name, email address, and, when enabled, versioned managed-role claims.
-7. Silo creates the session, optionally provisions the account, and applies a role only when the host authorized the advertised managed-role contract.
+6. It returns a stable external subject, display name, email address, and, when enabled, the SDK's typed managed-role assertion.
+7. Silo creates the session, optionally provisions the account, and applies a role only when the operator authorized the installed SDK managed-role descriptor.
 
 Zero-result, multiple-result, and server size-limit searches perform a bind attempt against a reserved dummy DN before returning the same invalid-login result. This removes the most obvious password-bind operation-count oracle; it is not a claim of cryptographic constant-time behavior or indistinguishable directory response timing.
 
@@ -75,7 +75,13 @@ When role synchronization is enabled:
 - promotions and demotions are applied on the next successful LDAP login;
 - removing a user from the administrator group demotes that account back to normal user permissions.
 
-Role authority uses the temporary versioned `silo.auth.managed-role.v1` host extension. The plugin emits `silo_role_contract`, `silo_role_managed`, and `silo_role` only when role synchronization is enabled. A compatible Silo host must recognize the exact advertised contract and the operator must explicitly allow managed roles on the authentication binding; a bare role claim is not authoritative. If LDAP role synchronization is enabled while the binding is not authorized, authentication fails closed.
+Role authority uses the SDK-owned `auth_provider.managed_roles` descriptor and
+`AuthenticateResponse.managed_silo_role` assertion. The plugin advertises the
+exact `USER` and `ADMIN` roles it may return. The assertion is not authority by
+itself: the operator must explicitly enable **Allow managed Silo roles** on the
+authentication binding, and the host rechecks that persisted authorization at
+each login. If LDAP role synchronization is enabled while the binding is not
+authorized, authentication fails closed.
 
 Administrator accounts must still satisfy the sign-in allowlist. Add administrators to both groups, nest the administrator group inside the user group where your directory exposes the membership as required, or include both group DNs in the sign-in allowlist with **Any configured group** selected.
 
@@ -125,7 +131,14 @@ The workflow also generates platform-specific manifests with the binary checksum
 
 ## Connection validation
 
-The current Silo plugin SDK has no generic or authentication-provider connection-test RPC. This plugin therefore does not advertise the media-oriented `request_router.v1` capability or provide a Test connection action. Validate network reachability, TLS trust, search-account permissions, user search, password bind, and group visibility with a non-production directory account before rollout. A future connection-test feature requires an SDK-owned auth/config validation contract.
+The plugin implements the SDK-owned
+`AuthProviderConfiguration.TestConnection` RPC. The check uses the prospective
+LDAP configuration without saving it and verifies network reachability, TLS,
+the configured search-account bind, and visibility of the base DN under the
+same absolute deadline as authentication. It does not attempt an end-user
+password bind or evaluate group membership; complete rollout validation still
+requires a non-production directory account. The plugin does not advertise or
+misuse the media-oriented `request_router.v1` capability.
 
 ## License
 

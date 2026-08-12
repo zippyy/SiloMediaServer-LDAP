@@ -31,6 +31,7 @@ const (
 	StageSearchAccountBind Stage = "search-account bind"
 	StageFilter            Stage = "filter"
 	StageUserSearch        Stage = "user search"
+	StageDirectorySearch   Stage = "directory search"
 	StageUserBind          Stage = "user bind"
 	StageIdentityMapping   Stage = "identity mapping"
 	StageTimeout           Stage = "timeout"
@@ -172,6 +173,51 @@ func (a *Authenticator) Authenticate(parent context.Context, username, password 
 		Groups:      append([]string(nil), groups...),
 		Role:        roleForGroups(groups, a.config),
 	}, nil
+}
+
+// TestConnection verifies transport security, the configured search-account
+// bind, and visibility of the configured base DN. It deliberately does not
+// authenticate an end user or evaluate group membership.
+func (a *Authenticator) TestConnection(parent context.Context) error {
+	ctx, cancel, deadline, err := a.operationContext(parent)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+
+	conn, err := a.connect(ctx, deadline)
+	if err != nil {
+		return staged(StageConnection, err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if a.config.BindDN != "" {
+		if err := conn.Bind(a.config.BindDN, a.config.BindPassword); err != nil {
+			return staged(StageSearchAccountBind, err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	result, err := conn.Search(ldap.NewSearchRequest(
+		a.config.BaseDN,
+		ldap.ScopeBaseObject,
+		ldap.NeverDerefAliases,
+		1,
+		0,
+		false,
+		"(objectClass=*)",
+		[]string{"1.1"},
+		nil,
+	))
+	if err != nil {
+		return staged(StageDirectorySearch, err)
+	}
+	if result == nil || len(result.Entries) != 1 {
+		return staged(StageDirectorySearch, fmt.Errorf("configured base DN did not resolve to exactly one entry"))
+	}
+	return ctx.Err()
 }
 
 func (a *Authenticator) operationContext(parent context.Context) (context.Context, context.CancelFunc, time.Time, error) {

@@ -28,9 +28,16 @@
       "display_name": "LDAP",
       "description": "Sign in with an LDAP directory account.",
       "auth_modes": ["password"],
-      "metadata": {
-        "managed_role_contract": "silo.auth.managed-role.v1",
-        "role_values": ["user", "admin"]
+      "auth_provider": {
+        "connection_test": {
+          "config_keys": ["ldap"]
+        },
+        "managed_roles": {
+          "supported_roles": [
+            "MANAGED_SILO_ROLE_USER",
+            "MANAGED_SILO_ROLE_ADMIN"
+          ]
+        }
       }
     }
   ],
