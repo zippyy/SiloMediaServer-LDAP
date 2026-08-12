@@ -5,11 +5,11 @@ go 1.26.0
 require (
 	github.com/Silo-Server/silo-plugin-sdk v0.13.0
 	github.com/go-ldap/ldap/v3 v3.4.14
-	google.golang.org/grpc v1.75.1
+	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.11
 )
 
-replace github.com/Silo-Server/silo-plugin-sdk => github.com/zippyy/silo-plugin-sdk v0.0.0-20260812005152-96cff1e38a04
+replace github.com/Silo-Server/silo-plugin-sdk => github.com/zippyy/silo-plugin-sdk v0.0.0-20260812203521-8f33f5883c44
 
 require (
 	github.com/Azure/go-ntlmssp v0.1.1 // indirect
@@ -27,5 +27,5 @@ require (
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 )

@@ -49,11 +49,11 @@ func TestAuthenticateEmitsTypedManagedRoleOnlyWhenEnabled(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			auth := &authServer{}
+			auth := testAuthServer()
 			auth.SetAuthenticator(&stubDirectoryAuthenticator{user: &ldapauth.User{
 				Subject: "entryuuid:1", DisplayName: "Alice", Email: "alice@example.com", Role: test.role,
 			}})
-			response, err := auth.Authenticate(context.Background(), &pluginv1.AuthenticateRequest{Username: "alice", Password: "password"})
+			response, err := auth.Authenticate(context.Background(), &pluginv1.AuthenticateRequest{CapabilityId: "ldap", Username: "alice", Password: "password"})
 			if err != nil {
 				t.Fatalf("Authenticate() error = %v", err)
 			}
@@ -68,9 +68,9 @@ func TestAuthenticateEmitsTypedManagedRoleOnlyWhenEnabled(t *testing.T) {
 }
 
 func TestAuthenticateRejectsUnsupportedDirectoryRole(t *testing.T) {
-	auth := &authServer{}
+	auth := testAuthServer()
 	auth.SetAuthenticator(&stubDirectoryAuthenticator{user: &ldapauth.User{Subject: "entryuuid:1", Role: "owner"}})
-	_, err := auth.Authenticate(context.Background(), &pluginv1.AuthenticateRequest{Username: "alice", Password: "password"})
+	_, err := auth.Authenticate(context.Background(), &pluginv1.AuthenticateRequest{CapabilityId: "ldap", Username: "alice", Password: "password"})
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("Authenticate() error = %v, want Internal", err)
 	}
@@ -105,11 +105,11 @@ func TestConfigurationConnectionCheckRejectsWrongCapability(t *testing.T) {
 }
 
 func TestAuthenticateDoesNotExposeDirectoryError(t *testing.T) {
-	auth := &authServer{}
+	auth := testAuthServer()
 	auth.SetAuthenticator(&stubDirectoryAuthenticator{
 		authErr: &ldapauth.StageError{Stage: ldapauth.StageUserSearch, Err: errors.New("search base ou=secret,dc=example,dc=com rejected")},
 	})
-	_, err := auth.Authenticate(context.Background(), &pluginv1.AuthenticateRequest{Username: "alice", Password: "password"})
+	_, err := auth.Authenticate(context.Background(), &pluginv1.AuthenticateRequest{CapabilityId: "ldap", Username: "alice", Password: "password"})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("Authenticate() error = %v, want Unavailable", err)
 	}
@@ -118,9 +118,49 @@ func TestAuthenticateDoesNotExposeDirectoryError(t *testing.T) {
 	}
 }
 
+func TestAuthenticateCapabilityRouting(t *testing.T) {
+	t.Run("explicit expected capability", func(t *testing.T) {
+		auth := testAuthServer()
+		auth.SetAuthenticator(&stubDirectoryAuthenticator{})
+		if _, err := auth.Authenticate(context.Background(), &pluginv1.AuthenticateRequest{CapabilityId: "ldap"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("legacy empty capability is accepted for singleton manifest", func(t *testing.T) {
+		auth := testAuthServer()
+		auth.SetAuthenticator(&stubDirectoryAuthenticator{})
+		if _, err := auth.Authenticate(context.Background(), &pluginv1.AuthenticateRequest{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("unknown capability fails before directory access", func(t *testing.T) {
+		auth := testAuthServer()
+		stub := &stubDirectoryAuthenticator{}
+		auth.SetAuthenticator(stub)
+		_, err := auth.Authenticate(context.Background(), &pluginv1.AuthenticateRequest{CapabilityId: "oidc"})
+		if status.Code(err) != codes.InvalidArgument || stub.calls != 0 {
+			t.Fatalf("Authenticate() error=%v calls=%d, want InvalidArgument and no directory access", err, stub.calls)
+		}
+	})
+
+	t.Run("legacy empty capability is ambiguous for multiple providers", func(t *testing.T) {
+		auth := testAuthServer()
+		auth.manifest.Capabilities = append(auth.manifest.Capabilities, &pluginv1.CapabilityDescriptor{Type: "auth_provider.v1", Id: "oidc"})
+		stub := &stubDirectoryAuthenticator{}
+		auth.SetAuthenticator(stub)
+		_, err := auth.Authenticate(context.Background(), &pluginv1.AuthenticateRequest{})
+		if status.Code(err) != codes.InvalidArgument || stub.calls != 0 {
+			t.Fatalf("Authenticate() error=%v calls=%d, want InvalidArgument and no directory access", err, stub.calls)
+		}
+	})
+}
+
 type stubDirectoryAuthenticator struct {
 	user    *ldapauth.User
 	authErr error
+	calls   int
 }
 
 type stubConnectionTester struct{ err error }
@@ -144,6 +184,7 @@ func testConfigEntry(t *testing.T) *pluginv1.ConfigEntry {
 }
 
 func (s *stubDirectoryAuthenticator) Authenticate(context.Context, string, string) (*ldapauth.User, error) {
+	s.calls++
 	if s.authErr != nil {
 		return nil, s.authErr
 	}
@@ -151,4 +192,11 @@ func (s *stubDirectoryAuthenticator) Authenticate(context.Context, string, strin
 		return s.user, nil
 	}
 	return &ldapauth.User{Subject: "entryuuid:1"}, nil
+}
+
+func testAuthServer() *authServer {
+	return &authServer{manifest: &pluginv1.PluginManifest{Capabilities: []*pluginv1.CapabilityDescriptor{{
+		Type: "auth_provider.v1",
+		Id:   "ldap",
+	}}}}
 }

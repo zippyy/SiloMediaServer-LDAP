@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
+	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/capability"
 	publicmanifest "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/manifest"
 	sdkruntime "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtime"
 	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtimedefault"
@@ -96,6 +97,7 @@ type authServer struct {
 	pluginv1.UnimplementedAuthProviderServer
 
 	mu            sync.RWMutex
+	manifest      *pluginv1.PluginManifest
 	authenticator directoryAuthenticator
 }
 
@@ -112,6 +114,10 @@ func (s *authServer) Authenticator() directoryAuthenticator {
 }
 
 func (s *authServer) Authenticate(ctx context.Context, req *pluginv1.AuthenticateRequest) (*pluginv1.AuthenticateResponse, error) {
+	capabilityID, err := capability.ResolveAuthProviderID(s.manifest, req.GetCapabilityId())
+	if err != nil || capabilityID != "ldap" {
+		return nil, status.Error(codes.InvalidArgument, "unknown authentication capability")
+	}
 	authenticator := s.Authenticator()
 	if authenticator == nil {
 		return nil, status.Error(codes.FailedPrecondition, "LDAP authentication is not configured")
@@ -154,7 +160,7 @@ func main() {
 		panic(fmt.Errorf("load plugin manifest: %w", err))
 	}
 
-	auth := &authServer{}
+	auth := &authServer{manifest: manifest}
 	runtime := &runtimeServer{
 		manifest: manifest,
 		auth:     auth,
